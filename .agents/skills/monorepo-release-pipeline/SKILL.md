@@ -115,7 +115,7 @@ Understanding the difference between library and app package versioning is essen
 
 ### Library packages (unifi-core, unifi-mcp-shared, relay)
 
-These packages use `dynamic = [\"version\"]` in `pyproject.toml` with hatch-vcs. Version is derived from the git tag **at build time** — no `_version.py` is ever committed to the repo. When a library tag is pushed:
+These packages use `dynamic = ["version"]` in `pyproject.toml` with hatch-vcs. Version is derived from the git tag **at build time** — no `_version.py` is ever committed to the repo. When a library tag is pushed:
 
 - The publish workflow builds and publishes the tagged commit as-is
 - `bump-plugin-versions.yml` runs and outputs: `No version changes to commit`
@@ -329,9 +329,22 @@ The bumper script reads the manifest JSON, extracts the version bump from the pu
 output, and replaces it at the specified index. Index 2 is the version string itself;
 index 0 would corrupt the flag or field name.
 
+**Atomic manifest sync — all plugin marketplaces:** When the bumper runs after a publish,
+it must atomically update version fields in ALL plugin manifest copies that get deployed
+to end users:
+- `plugins/unifi-network/.claude-plugin/plugin.json` (Claude plugin marketplace)
+- `plugins/unifi-network/.openai/plugin.json` (if deployed to OpenAI agents marketplace)
+- `plugins/unifi-network/.mcp.json` (MCP server manifest, if exposed as standalone server)
+- Same for protect, access, etc.
+
+The bumper workflow must commit a single atomic update across all copies. If some manifest
+files are updated and others are not, users will see version mismatches or stale metadata
+in non-updated marketplaces.
+
 **Verification:** After a release workflow completes and the bumper runs, check the
-manifest commit in GitHub. The `plugin.json` and `server.json` should have updated
-version strings (e.g., `"version": "0.14.14"`), NOT corrupted field names.
+manifest commit in GitHub. All `plugin.json` and `.mcp.json` files should have updated
+version strings (e.g., `"version": "0.14.14"`), NOT corrupted field names. Spot-check
+that Claude plugin, OpenAI agents, and standalone MCP manifests are all in sync.
 
 ## Procedure F: Dependency-Ordered Tag Pushing
 
@@ -345,45 +358,65 @@ unifi-core  →  unifi-mcp-shared  →  unifi-mcp-network
             →  unifi-api-server
 ```
 
-**Rule:** Push upstream tags first. Wait for PyPI to confirm the package is live
-before pushing downstream tags. Downstream packages declare a minimum version of their
-upstream dependencies in `pyproject.toml`; if the upstream version is not yet on PyPI
-when the downstream workflow runs, pip will fail to resolve the dependency.
+**Critical rule:** Push each tag INDIVIDUALLY, one at a time. Wait for GitHub Actions to
+complete and confirm the PyPI package is live before pushing the next tag. Batch-pushing
+tags in a single `git push` command causes GitHub Actions workflows to NOT trigger — releases
+are silently skipped. This is a GitHub Actions orchestration quirk: when multiple tags are
+pushed in a single push event, only the first workflow starts; subsequent tags are ignored.
+The silent failure causes PyPI to stay on the old version, artifact uploads to be skipped,
+and downstream installs to fail with unresolved dependencies.
 
-### Tag push sequence
+**Rule:** Upstream tags first. Wait for PyPI confirmation before downstream tags. Downstream
+packages declare a minimum version of their upstream dependencies in `pyproject.toml`; if
+the upstream version is not yet on PyPI when the downstream workflow runs, pip will fail
+to resolve the dependency.
+
+### Tag push sequence — PUSH ONE AT A TIME
 
 ```bash
 # Step 1 — upstream foundation
 git tag core/v0.2.0
 git push origin core/v0.2.0
-# WAIT: confirm https://pypi.org/project/unifi-core/ shows 0.2.0 before continuing
+# WAIT: confirm https://pypi.org/project/unifi-core/ shows 0.2.0 and CI is green
 
 # Step 2 — shared layer
 git tag shared/v0.4.0
 git push origin shared/v0.4.0
-# WAIT: confirm https://pypi.org/project/unifi-mcp-shared/ shows 0.4.0
+# WAIT: confirm https://pypi.org/project/unifi-mcp-shared/ shows 0.4.0 and CI is green
 
-# Step 3 — app servers and API (siblings after core/shared are live)
+# Step 3 — app servers and API (push individually, one per command)
 git tag network/v0.14.13
+git push origin network/v0.14.13
+# WAIT: confirm https://pypi.org/project/unifi-mcp-network/ shows 0.14.13 and CI is green
+
 git tag protect/v0.3.5
+git push origin protect/v0.3.5
+# WAIT: confirm https://pypi.org/project/unifi-mcp-protect/ shows 0.3.5 and CI is green
+
 git tag access/v0.2.4
+git push origin access/v0.2.4
+# WAIT: confirm https://pypi.org/project/unifi-mcp-access/ shows 0.2.4 and CI is green
+
 git tag api/v0.2.1
-git push origin network/v0.14.13 protect/v0.3.5 access/v0.2.4 api/v0.2.1
-# Siblings can be pushed together — same dependency level
+git push origin api/v0.2.1
+# WAIT: confirm https://pypi.org/project/unifi-api-server/ shows 0.2.1 and CI is green
 
 # Step 4 — relay
 git tag relay/v0.1.0
 git push origin relay/v0.1.0
+# WAIT: confirm https://pypi.org/project/unifi-mcp-relay/ shows 0.1.0 and CI is green
 
 # Step 5 — worker, if relay/worker behavior changed
 git tag worker/v1.3.1
 git push origin worker/v1.3.1
+# WAIT: confirm npm registry and CI are green
 ```
 
-**Never batch tags across dependency levels.** Running
-`git push origin core/v0.2.0 network/v0.14.13` in a single push fires both publish
-workflows simultaneously. The network workflow may start before the core package is
-indexed on PyPI (~2–5 minutes after the core workflow completes).
+**Why one push per tag:** The single-push-multiple-tags pattern (`git push origin tag1 tag2`)
+fires all workflows simultaneously but GitHub only queues the first. Subsequent workflows
+start only after the first completes (or not at all, silently). The expected behavior
+(all workflows start in parallel) does not happen. Workflow skips are invisible in the job
+log — the jobs don't appear at all, so it's easy to miss that a publish never happened.
 
 **Worker app:** `apps/worker` has a separate npm release flow using OIDC via GitHub Actions.
 Apply the same ordering principle: if the worker depends on a Python package version or relay
@@ -498,3 +531,10 @@ even though `metadata.py` only existed in shared 0.5.0; ~24h breakage, 4 reporte
 silently-affected user count a multiple of that, fixed by PR #284. Prevention: run the
 wheel-metadata check in Procedure D before pushing tags. Never trust `uv lock --check`
 as the gate for this class of bug.
+
+**Batch tag push silently skips releases.** When `git push origin tag1 tag2 tag3` is used
+to push multiple tags in one command, GitHub Actions only starts the workflow for the first
+tag. Subsequent tags are queued but the workflows never execute, leaving PyPI on the old
+version with no error or warning. The fix: push tags one at a time. This is a GitHub
+orchestration issue, not a git or hatch-vcs bug. Always use individual `git push origin tag`
+commands per tag and wait for PyPI confirmation between pushes.

@@ -212,6 +212,16 @@ the dependency ranges embedded in the wheel metadata.
 6. Tag `unifi-core` before tagging any dependent package. Dependency order and no-batching
    rules apply (see `monorepo-release-pipeline`).
 
+**Gotcha — Workspace source masking:** `uv lock --check` passes even when dependency
+ranges in `pyproject.toml` won't resolve on PyPI because the workspace `pyproject.toml`
+contains workspace sources (path dependencies) that mask the version validation. The CI
+gate (PR #286) includes a pin-alignment step that re-runs dependency resolution with
+workspace sources disabled. Until that step is complete, a `uv lock --check` pass is
+insufficient to guarantee published wheels will install. If you are preparing a
+coordinated release with bumped dependency bounds, verify via the pin-alignment CI
+job or manually test with `uv pip compile --no-deps` after removing workspace sources
+from the lock context (incident #283 provides the full forensic report).
+
 ## Cross-Cutting Gotchas
 
 **Blast radius is total, not partial.** A circular import caused by one forbidden
@@ -227,6 +237,13 @@ review on every protocol-touching PR is the only protection.
 successfully while still installing an older upstream package if its wheel metadata
 allows only the old line. Use `rg \"unifi-core|unifi-mcp-shared\" apps/ packages/` to
 audit ranges before tagging coordinated releases.
+
+**Pin-alignment CI gate enforces range correctness (PR #286).** When a release branch
+is ready, the CI workflow runs a dedicated pin-alignment job that strips workspace
+sources from the lock file and re-validates all dependency ranges against PyPI
+semantics. This catches misaligned ranges that `uv lock --check` would pass (see
+workspace-source-masking gotcha in Procedure D). The job is required to pass before
+any tag is created on the release branch.
 
 **Tag staggering is mandatory for coordinated releases.** When releasing both
 `unifi-core` and dependent packages (e.g., `unifi-mcp-shared`, `apps/network`):

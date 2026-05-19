@@ -38,21 +38,24 @@ Before any live run, ensure:
    ```
 
 2. **Per-server `tools_manifest.json` is up-to-date** — the harness auto-discovers tools
-   from each server's manifest at:
-   - `apps/network/src/unifi_network_mcp/tools_manifest.json`
-   - `apps/protect/src/unifi_protect_mcp/tools_manifest.json`
-   - `apps/access/src/unifi_access_mcp/tools_manifest.json`
-
-   New tools registered there are automatically included in smoke runs; no manual harness
-   edits are needed just to add read-only or preview coverage for a newly registered tool.
+   from each server's manifest. During development, verify your local module's manifest
+   is current:
+   ```bash
+   # Check where each server's manifest is located
+   find . -name "tools_manifest.json" -type f
+   ```
+   New tools registered in the manifest are automatically included in smoke runs; no manual
+   harness edits are needed just to add read-only or preview coverage for a newly registered
+   tool. If adding a new tool, verify the manifest entry exists and `safety_tier()`
+   classification is correct (see Procedure A).
 
 3. **Target hardware is reachable** — verify connectivity before running:
    ```bash
    curl -k https://$UNIFI_HOST
    ```
 
-4. **Branch context** — the harness lives in `codex/live-smoke-harness`. Confirm you're on
-   the correct branch before running extended phases.
+4. **Branch context** — the harness lives in `scripts/live_smoke.py` on the main branch.
+   When branching or bisecting, confirm you have the current harness code before running.
 
 ## Procedure A: Understand Tool Classification Tiers
 
@@ -310,9 +313,9 @@ in developer workflows; the fourth is automated in the release pipeline.
   `api-actions`, `api-resources`, and `api-streams` phases use a different runner and do
   not require `--server`.
 
-- **56 passing approved-ops is the Phase 2 baseline.** The `codex/live-smoke-harness`
-  branch established this count. A PR that drops the count or introduces new failures
-  requires a documented explanation and fix before merge.
+- **Phase 2 baseline is 56 passing approved-ops.** This count was established during Phase 2
+  development. A PR that drops the count or introduces new failures requires a documented
+  explanation and fix before merge.
 
 - **Credential rotation invalidates prior artifacts.** If credentials changed between runs,
   artifacts from prior runs cannot be used as PR evidence. Re-run from scratch.
