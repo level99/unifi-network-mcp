@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 @server.tool(
     name="unifi_lookup_by_ip",
-    description="Quick IP-to-hostname lookup. Returns only essential fields (hostname, name, MAC) to minimize token usage.",
+    description="Quick IP-to-client lookup. Returns essential fields (hostname, name, mac, is_online, last_seen) to minimize token usage.",
     annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
 )
 async def lookup_by_ip(
@@ -68,11 +68,12 @@ async def lookup_by_ip(
 @server.tool(
     name="unifi_list_clients",
     description=(
-        "Returns connected clients with MAC, name, hostname, IP, connection type "
-        "(wired/wireless), and for wireless clients: SSID, signal dBm, channel, radio. "
-        "Filter by filter_type (all/wired/wireless), set include_offline=true for "
-        "historical clients. For a single client's full raw object, use "
-        "unifi_get_client_details. For IP-to-hostname lookup, use unifi_lookup_by_ip."
+        "Returns connected clients with mac, name, hostname, ip, status (online/offline), "
+        "connection type (wired/wireless), and for wireless clients: ssid, signal_dbm, "
+        "channel, radio. Filter by filter_type (all/wired/wireless), set "
+        "include_offline=true for historical clients. For a single client's full raw "
+        "object, use unifi_get_client_details. For IP-to-client lookup, use "
+        "unifi_lookup_by_ip."
     ),
     annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
 )
@@ -130,10 +131,11 @@ async def list_clients(
 @server.tool(
     name="unifi_get_client_details",
     description=(
-        "Returns the full raw client object for one client by MAC address — includes "
-        "all controller-reported fields: IP, hostname, connection stats, DHCP info, "
-        "network/WLAN associations, traffic counters, and fixed-IP settings. "
-        "For a summary of all clients, use unifi_list_clients."
+        "Returns the full raw client object for one client by MAC address — all "
+        "controller-reported fields including connection stats, DHCP info, "
+        "network/WLAN associations, traffic counters, signal/RSSI, and fixed-IP "
+        "settings. Merges live /stat/sta data with the /rest/user snapshot for "
+        "active clients. For a summary of all clients, use unifi_list_clients."
     ),
     annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
 )
@@ -146,11 +148,25 @@ async def get_client_details(
     try:
         client_obj = await client_manager.get_client_details(mac_address)
         if client_obj:
-            shaped = client_from_controller(client_obj)
+            raw = (
+                client_obj.raw
+                if hasattr(client_obj, "raw") and isinstance(client_obj.raw, dict)
+                else (client_obj if isinstance(client_obj, dict) else {})
+            )
+            shaped = client_from_controller(client_obj).model_dump(exclude_none=True)
+            # Honor the "full raw client object" promise: deliver all controller-reported
+            # fields. Selectively layer the typed/normalized shape on top only for fields
+            # where the shape adds value (ISO timestamps, derived status, null-safe alias).
+            # Leave raw fields like `ip`/`last_ip` distinct so the current-vs-historical
+            # distinction is preserved.
+            merged: Dict[str, Any] = dict(raw)
+            for key in ("last_seen", "first_seen", "status", "name", "hostname"):
+                if key in shaped:
+                    merged[key] = shaped[key]
             return {
                 "success": True,
                 "site": client_manager._connection.site,
-                "client": shaped.model_dump(exclude_none=True),
+                "client": merged,
             }
         return {
             "success": False,
@@ -163,7 +179,7 @@ async def get_client_details(
 
 @server.tool(
     name="unifi_list_blocked_clients",
-    description="List clients/devices that are currently blocked from the network",
+    description="Lists clients/devices currently blocked from the network. Each entry includes mac, hostname, name, last_seen, blocked.",
     annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
 )
 async def list_blocked_clients() -> Dict[str, Any]:

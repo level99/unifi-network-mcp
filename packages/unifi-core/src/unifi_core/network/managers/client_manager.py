@@ -1,5 +1,6 @@
 import logging
-from typing import List, Optional
+from types import SimpleNamespace
+from typing import Any, List, Optional
 
 from aiounifi.models.api import ApiRequest
 from aiounifi.models.client import Client
@@ -88,17 +89,99 @@ class ClientManager:
             logger.error("Error getting all clients: %s", e)
             raise
 
-    async def get_client_details(self, client_mac: str) -> Client:
+    @staticmethod
+    def _mac_of(c: Any) -> Optional[str]:
+        if isinstance(c, dict):
+            return c.get("mac")
+        raw = getattr(c, "raw", None)
+        if isinstance(raw, dict):
+            return raw.get("mac")
+        return getattr(c, "mac", None)
+
+    @staticmethod
+    def _raw_of(c: Any) -> dict:
+        if c is None:
+            return {}
+        if isinstance(c, dict):
+            return c
+        raw = getattr(c, "raw", None)
+        return raw if isinstance(raw, dict) else {}
+
+    async def get_client_details(self, client_mac: str) -> Any:
         """Get detailed information for a specific client by MAC address.
 
+        Returns a merged view combining /stat/sta (live data: fresh
+        timestamps, uptime, signal, traffic) with /rest/user (stable
+        user-table fields: _id, noted, fixed_ip, alias). For currently-
+        connected clients, the result has the best of both endpoints; for
+        offline clients (not in /stat/sta) it falls back to just /rest/user.
+
+        Each endpoint is queried independently so a transient failure on
+        one does not block the lookup.
+
+        Returns:
+            An object with stable ``.mac`` and ``.raw`` attributes so
+            callers (rename_client, set_client_ip_settings, etc.) can
+            uniformly access the raw payload regardless of which endpoint
+            it came from.
+
         Raises:
-            UniFiNotFoundError: If the client does not exist.
+            UniFiNotFoundError: If at least one endpoint succeeded and
+                neither contained the requested MAC.
+            Original underlying exception: If *both* endpoints failed
+                (e.g., controller offline) — re-raised so callers see an
+                accurate failure cause instead of a misleading not-found.
         """
-        all_clients = await self.get_all_clients()
-        client: Optional[Client] = next((c for c in all_clients if c.mac == client_mac), None)
-        if client is None:
+        active_record: Optional[Any] = None
+        active_error: Optional[Exception] = None
+        try:
+            active = await self.get_clients()
+            for c in active:
+                if self._mac_of(c) == client_mac:
+                    active_record = c
+                    break
+        except Exception as e:
+            active_error = e
+            logger.debug("/stat/sta fetch failed during get_client_details: %s", e)
+
+        user_record: Optional[Any] = None
+        user_error: Optional[Exception] = None
+        try:
+            all_clients = await self.get_all_clients()
+            for c in all_clients:
+                if self._mac_of(c) == client_mac:
+                    user_record = c
+                    break
+        except Exception as e:
+            user_error = e
+            logger.debug("/rest/user fetch failed during get_client_details: %s", e)
+
+        if active_record is None and user_record is None:
+            if active_error is not None and user_error is not None:
+                # Both endpoints failed — surface the underlying connectivity/
+                # outage error rather than misreporting it as a not-found.
+                raise active_error
             raise UniFiNotFoundError("client", client_mac)
-        return client
+
+        active_raw = self._raw_of(active_record)
+        user_raw = self._raw_of(user_record)
+
+        if active_raw and user_raw:
+            # /stat/sta wins for overlapping keys (live data trumps stale snapshot);
+            # /rest/user supplies stable user-table fields (_id, noted, fixed_ip,
+            # local_dns_record, usergroup_id) that /stat/sta sometimes omits.
+            merged_raw = {**user_raw, **active_raw}
+            return SimpleNamespace(mac=client_mac, raw=merged_raw)
+
+        # Single-source: normalize to the same `.mac`/`.raw` contract so all
+        # callers can rely on attribute access without runtime type checks.
+        single = active_record if active_record is not None else user_record
+        single_raw = active_raw or user_raw
+        if isinstance(single, dict):
+            return SimpleNamespace(mac=single.get("mac"), raw=single)
+        if not hasattr(single, "raw") or not isinstance(getattr(single, "raw", None), dict):
+            return SimpleNamespace(mac=self._mac_of(single), raw=single_raw)
+        return single
 
     async def block_client(self, client_mac: str) -> bool:
         """Block a client by MAC address.

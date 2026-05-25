@@ -4840,7 +4840,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Returns the full raw client object for one client by MAC address \u2014 includes all controller-reported fields: IP, hostname, connection stats, DHCP info, network/WLAN associations, traffic counters, and fixed-IP settings. For a summary of all clients, use unifi_list_clients.",
+      "description": "Returns the full raw client object for one client by MAC address \u2014 all controller-reported fields including connection stats, DHCP info, network/WLAN associations, traffic counters, signal/RSSI, and fixed-IP settings. Merges live /stat/sta data with the /rest/user snapshot for active clients. For a summary of all clients, use unifi_list_clients.",
       "name": "unifi_get_client_details",
       "schema": {
         "input": {
@@ -9465,7 +9465,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "List clients/devices that are currently blocked from the network",
+      "description": "Lists clients/devices currently blocked from the network. Each entry includes mac, hostname, name, last_seen, blocked.",
       "name": "unifi_list_blocked_clients",
       "schema": {
         "input": {
@@ -9633,7 +9633,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Returns connected clients with MAC, name, hostname, IP, connection type (wired/wireless), and for wireless clients: SSID, signal dBm, channel, radio. Filter by filter_type (all/wired/wireless), set include_offline=true for historical clients. For a single client's full raw object, use unifi_get_client_details. For IP-to-hostname lookup, use unifi_lookup_by_ip.",
+      "description": "Returns connected clients with mac, name, hostname, ip, status (online/offline), connection type (wired/wireless), and for wireless clients: ssid, signal_dbm, channel, radio. Filter by filter_type (all/wired/wireless), set include_offline=true for historical clients. For a single client's full raw object, use unifi_get_client_details. For IP-to-client lookup, use unifi_lookup_by_ip.",
       "name": "unifi_list_clients",
       "schema": {
         "input": {
@@ -11801,7 +11801,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Quick IP-to-hostname lookup. Returns only essential fields (hostname, name, MAC) to minimize token usage.",
+      "description": "Quick IP-to-client lookup. Returns essential fields (hostname, name, mac, is_online, last_seen) to minimize token usage.",
       "name": "unifi_lookup_by_ip",
       "schema": {
         "input": {
