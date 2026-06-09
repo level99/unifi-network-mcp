@@ -9,9 +9,9 @@ description: >-
   generation, test_scaffold.py registration, Strawberry GraphQL type registration,
   cursor-based pagination for list endpoints, render-hint conventions, HTTP error contracts
   (409 for capability mismatch), ManagerFactory multi-controller concurrency, the 8-surface
-  Phase 8 CI gate, mutation tool registration, and DISPATCH_ARG_TRANSLATORS action dispatcher
-  wiring. Activates for any task that introduces new resource support across the manager/tool/API
-  boundary.
+  Phase 8 CI gate, field-symmetry migration procedure, update tool fetch-merge-put pattern,
+  mutation tool registration, and DISPATCH_ARG_TRANSLATORS action dispatcher wiring. Activates
+  for any task that introduces new resource support across the manager/tool/API boundary.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -127,7 +127,8 @@ def get_tools() -> list[Tool]:
              inputSchema={"type": "object", "properties": {}},
              annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True)),
         Tool(name="network_dns_record_update", description="Update DNS record.",
-             inputSchema={"type": "object", "properties": {"record_id": {"type": "string"}, **_mutable}, "required": ["record_id"]},
+             inputSchema={"type": "object", "properties": {"record_id": {"type": "string"}, **_mutable},
+                          "required": ["record_id"], "additionalProperties": False},
              annotations=ToolAnnotations(destructiveHint=False, idempotentHint=True)),
     ]
 ```
@@ -198,9 +199,6 @@ class Client(UniFiType):
     kind: str = "LIST"  # required
     mac: str
     hostname: Optional[str]
-    @classmethod
-    def from_manager_object(cls, obj):
-        return cls(mac=obj.raw.get("mac"), hostname=obj.raw.get("hostname"))
 ```
 
 Register in `apps/api/src/unifi_api/types/__init__.py`:
@@ -215,48 +213,22 @@ Protect list tools have two valid patterns depending on whether the manager retu
 homogeneous list or a variable-shape envelope:
 
 **Pattern 1 — `kind=list` with `_coerce_list_result` normalization** (recognition tools):
-Used for `protect_list_known_faces` and `protect_list_known_license_plates`. These tools
-return a single-key dict envelope (e.g., `{"items": [...]}`) from the manager. The API
+Used for `protect_list_known_faces` and `protect_list_known_license_plates`. The API
 routes layer (`apps/api/src/unifi_api/routes/actions.py`) automatically calls
-`_coerce_list_result()` for any tool with `kind="list"` — it unwraps a single-key dict
-into a bare list. Implement these tools as standard `kind=list` types; do not manually
-unwrap the envelope in the type or tool layer.
+`_coerce_list_result()` for any tool with `kind="list"` — unwraps a single-key dict
+envelope into a bare list. Do not manually unwrap in the type or tool layer.
 
-**Pattern 2 — `kind=DETAIL` wrapper** (alarm rules and other variable-shape resources):
+**Pattern 2 — `kind=DETAIL` wrapper** (variable-shape resources like alarm rules):
 Used for resources that return either a bare list or a `{items, count}` dict depending on
-firmware version. The API type's `from_manager_output` accepts both shapes and normalizes:
-```python
-@strawberry.type
-class AlarmRuleListType(UniFiType):
-    kind: str = "DETAIL"
-    # fields...
-    @classmethod
-    def from_manager_output(cls, raw):
-        if isinstance(raw, list):
-            data = raw[0] if raw else {}
-        else:
-            data = raw  # {items: [...], count: N}
-        return cls(...)
-```
+firmware version. The type's `from_manager_output` classmethod accepts both shapes and
+normalizes. Document the firmware versions tested.
 
-**Choosing the pattern:** Use `kind=list` + `_coerce_list_result` when the manager returns
-a consistent single-key envelope. Use `kind=DETAIL` wrapper when the firmware may return
-bare list or dict depending on version. Document the firmware versions tested.
+**Choosing the pattern:** Use Pattern 1 when the manager returns a consistent single-key
+envelope. Use Pattern 2 when firmware may return bare list or dict depending on version.
 
 ### Procedure C: Mutation Registration
 
-**File:** `apps/api/src/unifi_api/mutations/network/firewall.py`
-
-```python
-from unifi_api.mutations._base import MutationHandler, mutation_registry
-
-class FirewallPolicyCreateHandler(MutationHandler):
-    async def execute(self, request_data: dict, controller_id: str, site_id: str):
-        manager = await self.get_manager(controller_id, "network", "firewall_policy_manager")
-        return await manager.create_policy(**request_data)
-
-mutation_registry.register_mutation("unifi_create_firewall_policy", FirewallPolicyCreateHandler())
-```
+Mutations are wired via `DISPATCH_ARG_TRANSLATORS` in the action dispatcher (Step 8 in Part 1). There is no separate `MutationHandler` base class or `mutation_registry` module in the codebase — do not create one. All write-path tools flow through the existing actions route in `apps/api/src/unifi_api/services/dispatch_overrides.py`.
 
 ### Procedure D: Cursor-Based Pagination
 
@@ -306,6 +278,140 @@ result = await self._api.put(f"/rest/firewall/rule/{rule_id}", json=merged)
 
 ---
 
+## Part 3: Field-Symmetry Migration
+
+The field-symmetry rule requires every field name exposed by `list_*` output to be accepted under the same name by the matching `create_*`/`update_*` tool. Use this procedure when migrating an existing domain — even if the user doesn't say "field symmetry." Rollout is complete across all three servers (Network, Protect, Access) as of Phase 4.
+
+### Step FS-1 — Audit the Field Gap
+
+Compare the list tool's output schema against every field accepted by create/update:
+
+```bash
+grep -n "list_<domain>" apps/network/src/unifi_network_mcp/tools/<domain>.py
+```
+
+For each field the list response returns, verify the create/update tool accepts it under the same name. Common gaps:
+- List returns flat booleans (`qos_enabled`); create expects nested dicts (`qos: {...}`) → silent drop.
+- List returns `schedule_mode`; update accepts no schedule parameter → silent drop.
+
+### Step FS-2 — Model Structure Invariants
+
+`packages/unifi-core/src/unifi_core/<server>/models/<domain>.py`:
+
+```python
+class <Domain>Base(BaseModel):
+    field_a: Optional[str] = None   # = None ONLY — no non-None defaults here
+    field_b: Optional[bool] = None
+
+class Create<Domain>(<Domain>Base):
+    name: str                        # required at creation
+    create_only_field: str           # e.g., network_id
+
+class Update<Domain>(<Domain>Base):
+    pass  # add update-only fields if needed
+```
+
+**Blast-radius rule (hard blocker on review):** Non-`None` defaults in `<Domain>Base` or `Update<Domain>` silently overwrite controller state on every update that doesn't specify the field.
+
+| Location | Non-`None` defaults allowed? |
+|----------|------------------------------|
+| `Create<Domain>` | ✅ Yes — creation only |
+| `<Domain>Base` | ❌ No — `= None` only |
+| `Update<Domain>` | ❌ No — `= None` only |
+
+### Step FS-3 — Field Validation Helper
+
+Export from the model file (implement per-domain; no shared validator module):
+
+```python
+MUTABLE_FIELDS = frozenset({"field_a", "field_b", ...})
+
+def validate_update_fields(fields: dict) -> tuple[bool, str | None]:
+    for name, value in fields.items():
+        info = <Domain>Base.model_fields.get(name)
+        if info is None: continue
+        try: TypeAdapter(info.annotation).validate_python(value, strict=True)
+        except ValidationError as e: return False, f"Invalid '{name}': {e.errors()[0]['msg']}"
+    return True, None
+```
+
+Managers filter to mutable fields inline: `{k: v for k, v in data.items() if k in MUTABLE_FIELDS}`.
+
+### Step FS-4 — Cross-Layer Symmetry Test
+
+Register the `(server, domain)` pair in `apps/api/tests/unit/test_cross_layer_symmetry.py` (`REGISTERED_PAIRS`). This gate checks that the Strawberry type at `unifi_api.graphql.types.<server>.<domain>` exposes every `MUTABLE_FIELDS` name with a compatible annotation, catching MCP↔API drift at PR time.
+
+### Field-Symmetry Gotchas
+
+**Flat → nested translation:** List exposes `qos_enabled: bool`; UniFi API expects `{"qos": {"enabled": true}}`. Translation lives in the **manager**, not the model — model stays flat, manager maps to nested shape before the PUT.
+
+**Non-mutable test exceptions are permanent:** Fields like `id`, `created_at`, computed summaries must be documented as exceptions in symmetry tests. Do NOT enforce symmetry for genuinely non-mutable fields.
+
+**Reference files:** `packages/unifi-core/src/unifi_core/network/models/acl.py` (ACL model reference, `MUTABLE_FIELDS` + validation), `packages/unifi-core/src/unifi_core/network/managers/acl_manager.py` (ACL manager, fetch-merge-put without manager-level validator), `AGENTS.md` (governance rule).
+
+---
+
+## Part 4: Update Tool — Fetch-Merge-Put Deep-Dive
+
+All `update_*` tools use the fetch-merge-put pattern. Skipping the fetch step causes silent data loss — the PUT wipes every field not in the payload. Read `network_manager.py:update_network` as the golden-path reference first.
+
+### Four-Step Pattern
+
+```python
+async def update_<resource>(self, resource_id: str, update_data: dict) -> dict:
+    # 1. Fetch current state
+    current = await self.get_<resource>_by_id(resource_id)
+    if not current: raise ValueError(f"<Resource> {resource_id} not found")
+    # 2. Deep-copy before mutating (protects cached response)
+    import copy; base = copy.deepcopy(current)
+    # 3. Merge caller's partial dict over the base
+    merged = deep_merge(base, update_data)
+    # 4. PUT the fully-merged object
+    return await self._connection.put(f"<endpoint>/{resource_id}", merged)
+```
+
+### deep_merge Semantics
+
+| Value type | Behavior |
+|------------|----------|
+| `dict` | Merged recursively — sibling keys preserved |
+| `scalar` | Replaced — caller's value wins |
+| `list` | Replaced entirely — not element-merged |
+| `None` | Replaced — cannot distinguish "clear" from "not specified" |
+
+### Update Tool Requirements
+
+**`additionalProperties: false` on every update tool's `inputSchema`** — closes the ArgModelBase silent-drop vulnerability (FastMCP drops extra keys before validation). Set inline on the Tool definition (see Step 4 example above).
+
+**`update_data: dict` param** — LLM UX requirement. Include "pass only fields you want to change; omitted fields are preserved" in the docstring.
+
+**Delta preview, not full merged result:**
+```python
+if not confirm:
+    current = await manager.get_<resource>_by_id(resource_id)
+    preview = {k: {"before": current.get(k), "after": v} for k, v in update_data.items()}
+    return f"Preview (pass confirm=True to apply):\n{json.dumps(preview, indent=2)}"
+```
+The double-fetch is intentional — ensures preview reflects live controller state, not stale cache.
+
+### Create vs. Update Asymmetry
+
+Update tools use `update_data: dict`. Create tools use flat keyword params. Do not mirror the create tool signature when building the update tool — they solve different problems (full spec vs. delta).
+
+### Regression Test Standard
+
+Every update tool must verify non-passed fields are preserved after the update:
+```python
+# mock_get returns {"name": "original", "vlan": 10, "notes": "keep me"}
+await manager.update_<resource>("id-1", {"name": "new-name"})
+payload = mock_put.call_args[1]["json"]
+assert payload["vlan"] == 10            # preserved
+assert payload["notes"] == "keep me"   # preserved
+assert payload["name"] == "new-name"   # updated
+```
+
+---
+
 ## Naming Conventions
 
 Network/Access: `{package}_{resource}_{verb}` (e.g., `network_dns_record_create`)
@@ -332,8 +438,6 @@ Manager class: `{Resource}Manager`. Factory: `get_{resource}_manager` with `@lru
 
 **8-surface mandatory Phase 8+** — incomplete PRs merge-blocked by CI.
 
-**Mutation registry controls write exposure** — unregistered mutations won't be callable via API.
-
 **Release tag policy:** No `api/*` tags before Phase 7.
 
 **Silent creation failures:** Controller may return 200 without creating; check required fields.
@@ -350,18 +454,22 @@ Manager class: `{Resource}Manager`. Factory: `get_{resource}_manager` with `@lru
 
 **V2 ObjectID vs. Integration UUID:** ObjectIDs are controller-local; if implementing cross-controller queries, use Integration UUID path instead. Test against multi-controller setups.
 
-**Pass-through test pattern:** For tools that pass raw manager output to API without transformation, validate that the shape is compatible with Strawberry type expectations. Use snapshot tests or schema-compliance tests to catch shape drift early.
+**Pass-through test pattern:** For tools that pass raw manager output to API without transformation, validate shape compatibility with Strawberry type expectations via snapshot or schema-compliance tests.
 
-**`_coerce_list_result` for kind=list action tools:** `apps/api/src/unifi_api/routes/actions.py` automatically calls `_coerce_list_result()` for any action tool whose type has `kind="list"`. It unwraps single-key dict envelopes (e.g., `{"items": [...]}`) to a bare list; bare lists pass through unchanged. Protect recognition tools (`protect_list_known_faces`, `protect_list_known_license_plates`) rely on this. If your new list tool's manager returns a multi-key dict, `_coerce_list_result` will raise — ensure manager output is either a bare list or a single-key envelope dict.
+**`_coerce_list_result` for kind=list action tools:** `apps/api/src/unifi_api/routes/actions.py` automatically calls `_coerce_list_result()` for any action tool whose type has `kind="list"`. It unwraps single-key dict envelopes to a bare list; bare lists pass through. If your manager returns a multi-key dict, `_coerce_list_result` will raise — ensure output is a bare list or single-key envelope.
 
-**api-actions phase uses a curated 6-tool sample:** `API_ACTIONS_SAMPLE` in `scripts/live_smoke.py` is hardcoded to 6 tools (network clients/devices, protect cameras/lights, access doors/users). New tools are NOT automatically included in `--phase api-actions` coverage. To add api-actions smoke coverage for a new tool, explicitly append it to `API_ACTIONS_SAMPLE` in `scripts/live_smoke.py`.
+**api-actions phase uses a curated 6-tool sample:** `API_ACTIONS_SAMPLE` in `scripts/live_smoke.py` is hardcoded to 6 tools. New tools are NOT automatically included. Explicitly append to `API_ACTIONS_SAMPLE` to add api-actions smoke coverage.
 
-**Tool description vs. Pydantic Field description:** Tool `description=` field conveys the tool's purpose to the LLM. Pydantic `Field(description=...)` conveys field semantics. Keep these distinct — do not copy-paste the tool description into field descriptions or vice versa.
+**Tool description vs. Pydantic Field description:** Keep distinct — do not copy-paste tool description into field descriptions.
 
-**`api_request_raw` required for empty-body Protect DELETE and merge ops:** `client.api_request()` raises when the controller returns an empty response body (e.g., Protect DELETE automations, merge-group). Use `client.api_request_raw()` instead — it skips JSON decoding and returns `None` on empty. This pattern is used in `packages/unifi-core/src/unifi_core/protect/managers/alarm_manager.py` and `packages/unifi-core/src/unifi_core/protect/managers/recognition_manager.py`. When implementing any Protect DELETE or merge endpoint, default to `api_request_raw` unless you have confirmed the controller always returns a non-empty body.
+**`api_request_raw` required for empty-body Protect DELETE and merge ops:** `client.api_request()` raises when the controller returns an empty response body. Use `client.api_request_raw()` instead. Reference: `packages/unifi-core/src/unifi_core/protect/managers/alarm_manager.py`.
 
-**`AlarmRulesFacade` — version-transparent facade for dual-backend resources:** When a resource spans two API backends (e.g., the v2 OS-level alarm manager and the legacy automations API), implement a facade class that prefers the v2 path and falls back to legacy on `AlarmManagerPermissionError` or `BadRequest`. Surface the `complete` flag in the MCP `_meta` block so callers know whether v2 or legacy served the result. 5xx/transient errors must NOT be masked — propagate them so real v2 outages remain visible. Reference implementation: `packages/unifi-core/src/unifi_core/protect/managers/alarm_facade.py`.
+**`AlarmRulesFacade` — version-transparent facade for dual-backend resources:** When a resource spans two API backends, implement a facade that prefers v2 and falls back to legacy on `AlarmManagerPermissionError` or `BadRequest`. Surface the `complete` flag in `_meta`. 5xx/transient errors must NOT be masked. Reference: `packages/unifi-core/src/unifi_core/protect/managers/alarm_facade.py`.
 
-**SuperAdmin prerequisite for OS-level Protect v2 endpoints:** Some Protect endpoints (e.g., the v2 alarm manager at the OS level) require a SuperAdmin credential on the Protect console. A regular site admin receives `AlarmManagerPermissionError`; the `AlarmRulesFacade` silently falls back to legacy in this case. Always document the SuperAdmin requirement in the tool description and model docstring (`packages/unifi-core/src/unifi_core/protect/managers/alarm_manager_service.py` has the reference error class). Test with a SuperAdmin account to verify the v2 code path is reached.
+**SuperAdmin prerequisite for OS-level Protect v2 endpoints:** Some endpoints require SuperAdmin on the Protect console. Regular site admins receive `AlarmManagerPermissionError`; `AlarmRulesFacade` falls back silently. Always document this requirement in tool descriptions.
 
-**Separate Network/Protect user databases — SuperAdmin on one ≠ SuperAdmin on the other:** Network and Protect maintain independent user stores. A SuperAdmin account on the UniFi Network controller (`UNIFI_HOST`) does NOT automatically have SuperAdmin on the Protect console (`UNIFI_PROTECT_HOST`). When documenting credential requirements, be explicit: "SuperAdmin on the Protect console" vs. "SuperAdmin on the Network controller." This distinction also affects end-user deployment instructions.
+**Separate Network/Protect user databases:** SuperAdmin on the Network controller does NOT automatically mean SuperAdmin on the Protect console. Be explicit about which system the credential requirement applies to.
+
+**Facade migration — audit ALL call sites:** When migrating a service handler to a facade, audit EVERY call site: action dispatcher (`apps/api/src/unifi_api/services/dispatch_overrides.py`), GraphQL query/mutation fields, and any routing table entries. Missing one leaves old code silently routing to the pre-migration target. (Ref: PR #335 alarm facade migration where dispatcher kept routing to legacy `alarm_manager` after the facade was introduced.)
+
+**Cross-package combined pytest run hits conftest collision:** Running `uv run pytest packages/ apps/` causes pytest to load conflicting conftest files from different packages and fail. Run per-package instead: `uv run pytest packages/unifi-core` or `uv run pytest apps/network`.
