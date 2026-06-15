@@ -436,7 +436,8 @@ async def test_dispatch_translates_acl_create_kwargs_to_controller_payload() -> 
             "action": "block",  # lowercase — tool layer uppercases
             "network_id": "net001",
             "source_macs": ["aa:bb:cc:dd:ee:ff"],
-            "destination_macs": [],
+            "destination_macs": ["01:00:5e:00:00:00"],
+            "destination_netmask": 24,  # must survive the API translation boundary
             "enabled": True,
         },
         confirm=True,
@@ -458,7 +459,9 @@ async def test_dispatch_translates_acl_create_kwargs_to_controller_payload() -> 
     assert payload["mac_acl_network_id"] == "net001"
     assert payload["traffic_source"]["specific_mac_addresses"] == ["aa:bb:cc:dd:ee:ff"]
     assert payload["traffic_source"]["type"] == "CLIENT_MAC"
-    assert payload["traffic_destination"]["specific_mac_addresses"] == []
+    assert payload["traffic_destination"]["specific_mac_addresses"] == ["01:00:5e:00:00:00"]
+    # netmask passed through the API dispatch translator and converted to a bitmask
+    assert payload["traffic_destination"]["mac_mask"] == "ff:ff:ff:00:00:00"
 
 
 @pytest.mark.asyncio
@@ -494,10 +497,10 @@ async def test_dispatch_translates_acl_update_kwargs_to_rule_id_plus_payload() -
         controller_id="cid",
         controller_products=["network"],
         site="default",
+        # fields are nested in rule_data (the real tool/manifest schema), NOT top-level
         args={
             "rule_id": "r1",
-            "name": "New",
-            "source_macs": ["11:22:33:44:55:66"],
+            "rule_data": {"name": "New", "source_macs": ["11:22:33:44:55:66"]},
         },
         confirm=True,
         dispatch_table={
@@ -515,6 +518,104 @@ async def test_dispatch_translates_acl_update_kwargs_to_rule_id_plus_payload() -
     # Field not provided in args is absent from the controller update payload
     assert "traffic_destination" not in update_payload
     assert "acl_index" not in update_payload
+
+
+@pytest.mark.asyncio
+async def test_dispatch_acl_update_clears_netmask() -> None:
+    """clear_destination_netmask flows through the API translator to a None mac_mask sentinel."""
+    entry = ToolEntry(name="unifi_update_acl_rule", product="network", category="acl_rules", manager="", method="")
+    registry = _registry_with(entry)
+    domain_manager = MagicMock()
+    domain_manager.update_acl_rule = AsyncMock(return_value={"_id": "r1"})
+    conn_manager = MagicMock()
+    conn_manager.site = "default"
+    conn_manager.set_site = AsyncMock()
+    factory = MagicMock()
+    factory.get_domain_manager = AsyncMock(return_value=domain_manager)
+    factory.get_connection_manager = AsyncMock(return_value=conn_manager)
+
+    await dispatch_action(
+        registry=registry,
+        factory=factory,
+        session=MagicMock(),
+        tool_name="unifi_update_acl_rule",
+        controller_id="cid",
+        controller_products=["network"],
+        site="default",
+        # clear (top-level) alongside a sibling field change (nested in rule_data) — both must come through
+        args={"rule_id": "r1", "rule_data": {"name": "renamed"}, "clear_destination_netmask": True},
+        confirm=True,
+        dispatch_table={"unifi_update_acl_rule": DispatchEntry(manager_attr="acl_manager", method="update_acl_rule")},
+    )
+    (positional, _) = domain_manager.update_acl_rule.await_args
+    payload = positional[1]
+    assert payload["traffic_destination"]["mac_mask"] is None  # clear sentinel
+    assert payload["name"] == "renamed"  # sibling field preserved alongside the clear
+
+
+@pytest.mark.asyncio
+async def test_dispatch_acl_update_rejects_empty() -> None:
+    """A no-field, no-clear update is rejected (parity with the MCP tool), not a silent no-op."""
+    entry = ToolEntry(name="unifi_update_acl_rule", product="network", category="acl_rules", manager="", method="")
+    registry = _registry_with(entry)
+    domain_manager = MagicMock()
+    domain_manager.update_acl_rule = AsyncMock(return_value={"_id": "r1"})
+    conn_manager = MagicMock()
+    conn_manager.site = "default"
+    conn_manager.set_site = AsyncMock()
+    factory = MagicMock()
+    factory.get_domain_manager = AsyncMock(return_value=domain_manager)
+    factory.get_connection_manager = AsyncMock(return_value=conn_manager)
+
+    with pytest.raises(ValueError, match="No fields"):
+        await dispatch_action(
+            registry=registry,
+            factory=factory,
+            session=MagicMock(),
+            tool_name="unifi_update_acl_rule",
+            controller_id="cid",
+            controller_products=["network"],
+            site="default",
+            args={"rule_id": "r1"},
+            confirm=True,
+            dispatch_table={
+                "unifi_update_acl_rule": DispatchEntry(manager_attr="acl_manager", method="update_acl_rule")
+            },
+        )
+    domain_manager.update_acl_rule.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_acl_update_rejects_bad_netmask() -> None:
+    """An out-of-range netmask via the API update path raises a clean ValueError (the route layer
+    converts it to an error envelope) rather than reaching netmask_to_mac_mask unvalidated."""
+    entry = ToolEntry(name="unifi_update_acl_rule", product="network", category="acl_rules", manager="", method="")
+    registry = _registry_with(entry)
+    domain_manager = MagicMock()
+    domain_manager.update_acl_rule = AsyncMock(return_value={"_id": "r1"})
+    conn_manager = MagicMock()
+    conn_manager.site = "default"
+    conn_manager.set_site = AsyncMock()
+    factory = MagicMock()
+    factory.get_domain_manager = AsyncMock(return_value=domain_manager)
+    factory.get_connection_manager = AsyncMock(return_value=conn_manager)
+
+    with pytest.raises(ValueError, match="netmask"):
+        await dispatch_action(
+            registry=registry,
+            factory=factory,
+            session=MagicMock(),
+            tool_name="unifi_update_acl_rule",
+            controller_id="cid",
+            controller_products=["network"],
+            site="default",
+            args={"rule_id": "r1", "rule_data": {"destination_netmask": 99}},
+            confirm=True,
+            dispatch_table={
+                "unifi_update_acl_rule": DispatchEntry(manager_attr="acl_manager", method="update_acl_rule")
+            },
+        )
+    domain_manager.update_acl_rule.assert_not_awaited()
 
 
 @pytest.mark.asyncio
