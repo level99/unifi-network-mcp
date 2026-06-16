@@ -147,17 +147,15 @@ def _translate_acl_create(args: dict[str, Any]) -> tuple[tuple[Any, ...], dict[s
     Mirrors the translation in
     ``apps/network/src/unifi_network_mcp/tools/acl.py:create_acl_rule``.
     """
-    from unifi_core.network.models.acl import AclRule, to_controller_create
+    from pydantic import ValidationError
+    from unifi_core.network.models.acl import build_acl_rule, to_controller_create
 
-    rule = AclRule(
-        name=args["name"],
-        acl_index=args["acl_index"],
-        action=str(args["action"]).upper(),
-        enabled=args.get("enabled", True),
-        network_id=args["network_id"],
-        source_macs=args.get("source_macs") or [],
-        destination_macs=args.get("destination_macs") or [],
-    )
+    try:
+        rule = build_acl_rule(args)
+    except ValidationError as e:
+        # Surface the same clean message the MCP tool returns, not a raw pydantic dump.
+        msg = e.errors()[0].get("msg", str(e)) if e.errors() else str(e)
+        raise ValueError(f"Invalid ACL rule: {msg}") from e
     return (to_controller_create(rule),), {}
 
 
@@ -168,10 +166,36 @@ def _translate_acl_update(args: dict[str, Any]) -> tuple[tuple[Any, ...], dict[s
     ``apps/network/src/unifi_network_mcp/tools/acl.py:update_acl_rule``.
     Only fields the caller actually supplied are passed through.
     """
-    from unifi_core.network.models.acl import MUTABLE_FIELDS, to_controller_update
+    from unifi_core.network.models.acl import (
+        CLEAR_NETMASK_FIELDS,
+        MUTABLE_FIELDS,
+        to_controller_update,
+        validate_update_fields,
+    )
 
     rule_id = args["rule_id"]
-    fields = {k: v for k, v in args.items() if k != "rule_id" and k in MUTABLE_FIELDS and v is not None}
+    # The mutable fields are nested in the rule_data dict (the tool's signature is
+    # update_acl_rule(rule_id, rule_data: dict, clear_*, confirm)) — NOT top-level args.
+    rule_data = args.get("rule_data") or {}
+    unknown_fields = set(rule_data) - MUTABLE_FIELDS
+    if unknown_fields:
+        raise ValueError(
+            f"Unknown or read-only fields: {sorted(unknown_fields)}. Allowed fields: {sorted(MUTABLE_FIELDS)}"
+        )
+    ok, err = validate_update_fields(rule_data)
+    if not ok:
+        raise ValueError(err)
+    fields = dict(rule_data)
+    # The clear-netmask sentinels are TOP-LEVEL args (siblings of rule_data), not members
+    # of rule_data / MUTABLE_FIELDS.
+    has_clear = False
+    for clear_key in CLEAR_NETMASK_FIELDS:
+        if args.get(clear_key):
+            fields[clear_key] = True
+            has_clear = True
+    # Parity with the MCP tool: reject a no-op update (no fields and no clear).
+    if not fields and not has_clear:
+        raise ValueError("No fields to update")
     return (rule_id, to_controller_update(fields)), {}
 
 

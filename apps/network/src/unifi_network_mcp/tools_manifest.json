@@ -1030,7 +1030,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Create a new MAC ACL rule for Layer 2 access control within a VLAN. Uses the same field names as unifi_list_acl_rules output \u2014 source_macs, destination_macs, network_id, action, etc. Empty MAC list = match any device. Requires confirmation.",
+      "description": "Create a new MAC ACL rule for Layer 2 access control within a VLAN. Uses the same field names as unifi_list_acl_rules output \u2014 source_macs, destination_macs, network_id, action, etc. Empty MAC list = match any device. Optionally apply a netmask (source_netmask/destination_netmask) to match a leading-bit prefix instead of exact MACs. Requires confirmation.",
       "name": "unifi_create_acl_rule",
       "permission_action": "create",
       "permission_category": "acl_rules",
@@ -1053,6 +1053,10 @@
               "description": "List of destination MAC addresses to match (empty list = any destination)",
               "type": "array"
             },
+            "destination_netmask": {
+              "description": "Optional netmask for destination_macs \u2014 number of leading bits that must match (e.g. 24 matches the vendor OUI, 48 matches the complete MAC). Omit for an exact match; do NOT pass 0 to mean 'no mask' \u2014 0 matches ANY MAC.",
+              "type": "integer"
+            },
             "enabled": {
               "description": "Whether the rule is active (default: true)",
               "type": "boolean"
@@ -1068,6 +1072,10 @@
             "source_macs": {
               "description": "List of source MAC addresses to match (empty list = any source)",
               "type": "array"
+            },
+            "source_netmask": {
+              "description": "Optional netmask for source_macs \u2014 number of leading bits that must match (e.g. 24 matches the vendor OUI, 48 matches the complete MAC). Omit for an exact match; do NOT pass 0 to mean 'no mask' \u2014 0 matches ANY MAC.",
+              "type": "integer"
             }
           },
           "required": [
@@ -15010,19 +15018,27 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Update an existing MAC ACL rule. Pass only the fields you want to change \u2014 current values are automatically preserved. Uses the same field names as unifi_list_acl_rules output: name, acl_index, action, enabled, network_id, source_macs, destination_macs. Requires confirmation.",
+      "description": "Update an existing MAC ACL rule. Pass only the fields you want to change \u2014 current values are automatically preserved. Uses the same field names as unifi_list_acl_rules output: name, acl_index, action, enabled, network_id, source_macs, destination_macs, source_netmask, destination_netmask. To remove a netmask (widen a prefix rule back to an exact match), set clear_source_netmask / clear_destination_netmask = true (passing source_netmask=null is a no-op, not a clear). Requires confirmation.",
       "name": "unifi_update_acl_rule",
       "permission_action": "update",
       "permission_category": "acl_rules",
       "schema": {
         "input": {
           "properties": {
+            "clear_destination_netmask": {
+              "description": "When true, removes the destination netmask (revert to exact-MAC match).",
+              "type": "boolean"
+            },
+            "clear_source_netmask": {
+              "description": "When true, removes the source netmask (revert to exact-MAC match). Overrides source_netmask.",
+              "type": "boolean"
+            },
             "confirm": {
               "description": "When true, applies the update. When false (default), returns a preview of the changes",
               "type": "boolean"
             },
             "rule_data": {
-              "description": "Dictionary of fields to update. Pass only the fields you want to change \u2014 current values are automatically preserved. Allowed keys: name, acl_index, action ('ALLOW'/'BLOCK'), enabled (bool), network_id, source_macs (list of MACs), destination_macs (list of MACs)",
+              "description": "Dictionary of fields to update. Pass only the fields you want to change \u2014 current values are automatically preserved. Allowed keys: name, acl_index, action ('ALLOW'/'BLOCK'), enabled (bool), network_id, source_macs (list of MACs), destination_macs (list of MACs), source_netmask (int, e.g. 24=OUI/48=full MAC), destination_netmask (int)",
               "type": "object"
             },
             "rule_id": {

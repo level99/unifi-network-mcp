@@ -281,6 +281,37 @@ def test_acl_rule_detail_serializer_shape() -> None:
     assert AclRule.render_hint("detail")["kind"] == "detail"
 
 
+def test_acl_rule_netmask_projection() -> None:
+    """The GraphQL type derives source/destination netmask + raw mask from the
+    controller's mac_mask, on the correct side, and degrades non-contiguous to null."""
+    from unifi_api.graphql.types.network.acl import AclRule
+
+    sample = {
+        "_id": "acl3",
+        "name": "multicast",
+        "enabled": True,
+        "action": "ALLOW",
+        "traffic_source": {"type": "CLIENT_MAC", "specific_mac_addresses": ["aa:bb:cc:dd:ee:ff"]},
+        "traffic_destination": {
+            "type": "CLIENT_MAC",
+            "specific_mac_addresses": ["01:00:5e:00:00:00"],
+            "mac_mask": "ff:ff:ff:00:00:00",
+        },
+    }
+    out = AclRule.from_manager_output(sample).to_dict()
+    # mask is on the destination side only — must not bleed onto source
+    assert out["destination_netmask"] == 24
+    assert out["destination_mac_mask"] == "ff:ff:ff:00:00:00"
+    assert out["source_netmask"] is None
+    assert out["source_mac_mask"] is None
+
+    # non-contiguous mask: netmask null but the raw mask stays visible
+    sample["traffic_destination"]["mac_mask"] = "ff:00:ff:00:00:00"
+    out = AclRule.from_manager_output(sample).to_dict()
+    assert out["destination_netmask"] is None
+    assert out["destination_mac_mask"] == "ff:00:ff:00:00:00"
+
+
 def test_acl_mutation_ack_dispatches_for_all_mutations() -> None:
     reg = _registry()
     for tool in (

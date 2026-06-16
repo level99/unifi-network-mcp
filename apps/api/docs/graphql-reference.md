@@ -148,6 +148,10 @@ type AclRule {
   destinationType: String
   sourceMacs: [String!]!
   destinationMacs: [String!]!
+  sourceNetmask: Int
+  destinationNetmask: Int
+  sourceMacMask: String
+  destinationMacMask: String
 }
 
 """Paginated page of ACL rules."""

@@ -26,12 +26,34 @@
             ],
             "title": "Action"
           },
+          "destination_mac_mask": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Destination Mac Mask"
+          },
           "destination_macs": {
             "items": {
               "type": "string"
             },
             "title": "Destination Macs",
             "type": "array"
+          },
+          "destination_netmask": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Destination Netmask"
           },
           "destination_type": {
             "anyOf": [
@@ -81,12 +103,34 @@
             ],
             "title": "Network Id"
           },
+          "source_mac_mask": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Mac Mask"
+          },
           "source_macs": {
             "items": {
               "type": "string"
             },
             "title": "Source Macs",
             "type": "array"
+          },
+          "source_netmask": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Netmask"
           },
           "source_type": {
             "anyOf": [
