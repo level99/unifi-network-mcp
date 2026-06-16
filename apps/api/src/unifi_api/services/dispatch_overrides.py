@@ -177,10 +177,15 @@ def _translate_acl_update(args: dict[str, Any]) -> tuple[tuple[Any, ...], dict[s
     # The mutable fields are nested in the rule_data dict (the tool's signature is
     # update_acl_rule(rule_id, rule_data: dict, clear_*, confirm)) — NOT top-level args.
     rule_data = args.get("rule_data") or {}
-    fields = {k: v for k, v in rule_data.items() if k in MUTABLE_FIELDS and v is not None}
-    ok, err = validate_update_fields(fields)
+    unknown_fields = set(rule_data) - MUTABLE_FIELDS
+    if unknown_fields:
+        raise ValueError(
+            f"Unknown or read-only fields: {sorted(unknown_fields)}. Allowed fields: {sorted(MUTABLE_FIELDS)}"
+        )
+    ok, err = validate_update_fields(rule_data)
     if not ok:
         raise ValueError(err)
+    fields = dict(rule_data)
     # The clear-netmask sentinels are TOP-LEVEL args (siblings of rule_data), not members
     # of rule_data / MUTABLE_FIELDS.
     has_clear = False

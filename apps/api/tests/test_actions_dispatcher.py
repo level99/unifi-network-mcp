@@ -619,6 +619,97 @@ async def test_dispatch_acl_update_rejects_bad_netmask() -> None:
 
 
 @pytest.mark.asyncio
+async def test_dispatch_acl_update_rejects_read_only_nested_field() -> None:
+    """The API translator must reject read-only fields nested in rule_data, matching the MCP tool."""
+    entry = ToolEntry(name="unifi_update_acl_rule", product="network", category="acl_rules", manager="", method="")
+    registry = _registry_with(entry)
+    domain_manager = MagicMock()
+    domain_manager.update_acl_rule = AsyncMock(return_value={"_id": "r1"})
+    conn_manager = MagicMock(site="default")
+    conn_manager.set_site = AsyncMock()
+    factory = MagicMock()
+    factory.get_domain_manager = AsyncMock(return_value=domain_manager)
+    factory.get_connection_manager = AsyncMock(return_value=conn_manager)
+
+    with pytest.raises(ValueError, match="Unknown or read-only fields"):
+        await dispatch_action(
+            registry=registry,
+            factory=factory,
+            session=MagicMock(),
+            tool_name="unifi_update_acl_rule",
+            controller_id="cid",
+            controller_products=["network"],
+            site="default",
+            args={"rule_id": "r1", "rule_data": {"source_mac_mask": "ff:ff:ff:00:00:00"}},
+            confirm=True,
+            dispatch_table={
+                "unifi_update_acl_rule": DispatchEntry(manager_attr="acl_manager", method="update_acl_rule")
+            },
+        )
+    domain_manager.update_acl_rule.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_acl_update_rejects_unknown_nested_field() -> None:
+    """Unknown fields nested in rule_data must fail instead of being silently dropped."""
+    entry = ToolEntry(name="unifi_update_acl_rule", product="network", category="acl_rules", manager="", method="")
+    registry = _registry_with(entry)
+    domain_manager = MagicMock()
+    domain_manager.update_acl_rule = AsyncMock(return_value={"_id": "r1"})
+    conn_manager = MagicMock(site="default")
+    conn_manager.set_site = AsyncMock()
+    factory = MagicMock()
+    factory.get_domain_manager = AsyncMock(return_value=domain_manager)
+    factory.get_connection_manager = AsyncMock(return_value=conn_manager)
+
+    with pytest.raises(ValueError, match="Unknown or read-only fields"):
+        await dispatch_action(
+            registry=registry,
+            factory=factory,
+            session=MagicMock(),
+            tool_name="unifi_update_acl_rule",
+            controller_id="cid",
+            controller_products=["network"],
+            site="default",
+            args={"rule_id": "r1", "rule_data": {"bogus": "ignored-before"}},
+            confirm=True,
+            dispatch_table={
+                "unifi_update_acl_rule": DispatchEntry(manager_attr="acl_manager", method="update_acl_rule")
+            },
+        )
+    domain_manager.update_acl_rule.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_acl_update_netmask_none_is_noop_field() -> None:
+    """source_netmask=None remains a safe no-op update field, matching the MCP tool's round-trip behavior."""
+    entry = ToolEntry(name="unifi_update_acl_rule", product="network", category="acl_rules", manager="", method="")
+    registry = _registry_with(entry)
+    domain_manager = MagicMock()
+    domain_manager.update_acl_rule = AsyncMock(return_value={"_id": "r1"})
+    conn_manager = MagicMock(site="default")
+    conn_manager.set_site = AsyncMock()
+    factory = MagicMock()
+    factory.get_domain_manager = AsyncMock(return_value=domain_manager)
+    factory.get_connection_manager = AsyncMock(return_value=conn_manager)
+
+    await dispatch_action(
+        registry=registry,
+        factory=factory,
+        session=MagicMock(),
+        tool_name="unifi_update_acl_rule",
+        controller_id="cid",
+        controller_products=["network"],
+        site="default",
+        args={"rule_id": "r1", "rule_data": {"source_netmask": None}},
+        confirm=True,
+        dispatch_table={"unifi_update_acl_rule": DispatchEntry(manager_attr="acl_manager", method="update_acl_rule")},
+    )
+    (positional, _) = domain_manager.update_acl_rule.await_args
+    assert positional == ("r1", {})
+
+
+@pytest.mark.asyncio
 async def test_dispatch_delete_acl_passes_rule_id_unchanged() -> None:
     """unifi_delete_acl_rule already aligns: manager takes rule_id as the only
     kwarg, so the default **args dispatch works. No translator needed."""
