@@ -194,8 +194,11 @@ When a tool domain has list/create/update tools, define a shared pydantic model 
    - The matching Strawberry type at `unifi_api.graphql.types.<server>.<domain>` must expose every pydantic `MUTABLE_FIELDS` name with a compatible type annotation
    - This catches MCP↔API drift at PR time
    - **Anchor:** `apps/api/tests/unit/test_cross_layer_symmetry.py`
-6. Run `make manifest`
-7. Commit model + refactored tools + tests together
+6. **If the change touches the API surface** (a Strawberry type, resolver field, REST route, or serializer), regenerate the API artifacts. These are **NOT** produced by `make manifest` — there is no make target for them, so it is easy to miss and the drift gates then fail at PR time:
+   - `apps/api/src/unifi_api/graphql/schema.graphql` (GraphQL SDL), `apps/api/openapi.json`, and `apps/api/docs/graphql-reference.md`
+   - The exact regen command for each lives in the docstring of its drift gate: `apps/api/tests/graphql/test_sdl_drift.py`, `test_openapi_drift.py`, and `test_docs_drift.py`
+7. Run `make manifest`
+8. Commit model + refactored tools + tests together
 
 ### Modify the permission system
 
@@ -226,6 +229,7 @@ make pre-commit   # format + lint + sync-skills + test
 - [ ] Returns standardized `{"success": bool, ...}` response
 - [ ] Added to `TOOL_MODULE_MAP` in `categories.py`
 - [ ] `make manifest` run and manifest committed
+- [ ] If the change touches the API surface (Strawberry type / resolver / route / serializer): `apps/api/src/unifi_api/graphql/schema.graphql`, `apps/api/openapi.json`, and `apps/api/docs/graphql-reference.md` regenerated and committed — these are NOT covered by `make manifest`; the `test_sdl_drift` / `test_openapi_drift` / `test_docs_drift` gates enforce them
 - [ ] Mutating tools implement preview-then-confirm
 - [ ] Tools returning raw controller secrets redact at the boundary according to response policy (see Response redaction pattern)
 - [ ] Permission category and action set via decorator kwargs
