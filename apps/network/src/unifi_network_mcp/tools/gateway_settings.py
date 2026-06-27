@@ -1,6 +1,6 @@
 """Unifi Network MCP gateway (USG) settings tools.
 
-Read and update the gateway's security / NAT / connection-tracking settings —
+Read and update the gateway's security / NAT / connection-tracking settings --
 the controller's ``usg`` settings singleton. Updates deep-merge a partial onto
 the current object, so nested sub-objects (e.g. ``dns_verification``) and
 untouched sibling keys are preserved.
@@ -37,12 +37,13 @@ SECURITY_SENSITIVE_FIELDS: frozenset[str] = frozenset(
         "upnp_enabled",
         "upnp_nat_pmp_enabled",
         "upnp_secure_mode",
+        "upnp_wan_interface",
         # GeoIP filtering
         "geo_ip_filtering_enabled",
         "geo_ip_filtering_block",
         "geo_ip_filtering_countries",
         "geo_ip_filtering_traffic_direction",
-        # DNS verification (changes the gateway's upstream resolver — a DNS-redirection lever)
+        # DNS verification (changes the gateway's upstream resolver -- a DNS-redirection lever)
         "dns_verification",
         # Flood/amplification protections
         "syn_cookies",

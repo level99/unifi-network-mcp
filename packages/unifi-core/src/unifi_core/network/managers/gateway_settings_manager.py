@@ -36,18 +36,28 @@ def _unpersisted_fields(before: Dict[str, Any], after: Dict[str, Any], requested
     LEAF key, not by whole-sub-object equality — otherwise the controller
     normalizing or filling an untouched sibling key would mask a silently-dropped
     sub-field (the change appears to "stick" because the sub-object moved overall).
+    The pre-existing sub-object being absent (``prev`` not a dict) and the
+    controller dropping/replacing the whole sub-object (``after`` not a dict) are
+    both handled so a requested leaf change cannot be falsely reported persisted.
     """
     stuck: List[str] = []
     for key, want in requested.items():
         prev = before.get(key)
-        if isinstance(want, dict) and isinstance(prev, dict):
-            after_sub = after.get(key)
-            after_sub = after_sub if isinstance(after_sub, dict) else {}
+        if isinstance(want, dict):
+            prev_sub = prev if isinstance(prev, dict) else {}
+            after_val = after.get(key)
+            if not isinstance(after_val, dict):
+                # Whole nested object dropped/replaced with a non-dict while we
+                # asked to change a leaf in it -> the request did not persist.
+                for subkey, subwant in want.items():
+                    if prev_sub.get(subkey) != subwant:
+                        stuck.append(f"{key}.{subkey}")
+                continue
             for subkey, subwant in want.items():
-                subprev = prev.get(subkey)
+                subprev = prev_sub.get(subkey)
                 if subprev == subwant:
-                    continue  # no real change for this sub-key
-                if after_sub.get(subkey) == subprev:
+                    continue  # no real change requested for this sub-key
+                if after_val.get(subkey) == subprev:
                     stuck.append(f"{key}.{subkey}")
             continue
         if prev == want:

@@ -172,6 +172,19 @@ async def test_update_raises_on_connection_failure():
         await mgr.update_gateway_settings({"upnp_enabled": True})
 
 
+async def test_update_nested_object_dropped_is_flagged_not_persisted():
+    """If the controller drops the whole dns_verification object after the write,
+    the requested leaf change must be flagged not-persisted (not falsely OK)."""
+    conn = _make_connection()
+    mgr = GatewaySettingsManager(conn)
+    pre = _usg()  # dns_verification.primary_dns_server == "1.1.1.1"
+    post = _usg(dns_verification=None)  # controller dropped the whole sub-object
+    conn.request.side_effect = [[pre], {}, [post]]
+    ok, err = await mgr.update_gateway_settings({"dns_verification": {"primary_dns_server": "9.9.9.9"}})
+    assert ok is False
+    assert err is not None and "dns_verification.primary_dns_server" in err
+
+
 def test_unpersisted_helper():
     assert _unpersisted_fields({"a": 1}, {"a": 1}, {"a": 2}) == ["a"]
     assert _unpersisted_fields({"a": 1}, {"a": 2}, {"a": 2}) == []
@@ -180,3 +193,9 @@ def test_unpersisted_helper():
     before = {"dns": {"a": "1", "b": "x"}}
     after = {"dns": {"a": "1", "b": "y"}}  # 'a' (requested) unchanged, 'b' moved
     assert _unpersisted_fields(before, after, {"dns": {"a": "2"}}) == ["dns.a"]
+    # nested DROP: controller replaced the whole sub-object with a non-dict -> flagged
+    assert _unpersisted_fields({"dns": {"a": "1"}}, {"dns": None}, {"dns": {"a": "2"}}) == ["dns.a"]
+    # nested CREATE, leaf not stored (sub-object absent pre-write) -> flagged
+    assert _unpersisted_fields({}, {"dns": {}}, {"dns": {"a": "2"}}) == ["dns.a"]
+    # nested CREATE, leaf stored -> persisted
+    assert _unpersisted_fields({}, {"dns": {"a": "2"}}, {"dns": {"a": "2"}}) == []
